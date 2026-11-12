@@ -1,0 +1,400 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>대한민국 날씨 · 미세먼지 지도</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<style>
+  :root { --c1:#2563eb; --c2:#16a34a; --c3:#f97316; --c4:#dc2626; --na:#94a3b8; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family:"Segoe UI","Malgun Gothic",sans-serif; background:#eef3f9; color:#1e293b; }
+  .layout { display:grid; grid-template-columns:1fr 390px; gap:16px; padding:16px; min-height:100vh; }
+  @media (max-width: 860px) { .layout { grid-template-columns:1fr; } }
+  .card { background:#fff; border-radius:20px; box-shadow:0 4px 20px rgba(15,23,42,.08); }
+  .mapwrap { position:relative; overflow:hidden; min-height:460px; height:calc(100vh - 32px); }
+  @media (max-width: 860px) { .mapwrap { height:62vh; } }
+  #map { position:absolute; inset:0; }
+  .panel { padding:20px; align-self:start; }
+  input, select, button { font:inherit; padding:10px 14px; border-radius:12px; border:1px solid #cbd5e1; }
+  .search { position:relative; margin-bottom:16px; }
+  .search input { width:100%; outline:none; }
+  .search input:focus { border-color:var(--c1); }
+  .list { position:absolute; left:0; right:0; top:calc(100% + 6px); z-index:1000; margin:0; padding:4px;
+    list-style:none; background:#fff; border-radius:14px; max-height:280px; overflow:auto;
+    box-shadow:0 8px 24px rgba(0,0,0,.25); }
+  .list li { padding:10px 12px; border-radius:10px; cursor:pointer; }
+  .list li small { display:block; color:#777; font-size:12px; }
+  .list li.active, .list li:hover { background:#e6f2ff; }
+  .list li.empty { color:#777; cursor:default; }
+  .place { font-size:20px; font-weight:700; }
+  .sub { font-size:12px; color:#64748b; margin-bottom:12px; }
+  .weather { display:flex; align-items:center; gap:14px; }
+  .icon { font-size:64px; line-height:1; }
+  .temp { font-size:48px; font-weight:700; line-height:1; }
+  .desc { color:#475569; }
+  .grid { display:grid; grid-template-columns:1fr 1fr; gap:10px; margin-top:16px; }
+  .item { background:#f1f5f9; border-radius:12px; padding:10px 12px; }
+  .item span { display:block; font-size:12px; color:#64748b; }
+  .item b { font-size:17px; }
+  h3 { margin:20px 0 8px; font-size:15px; }
+  .dust { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+  .dust .item { border-left:6px solid var(--na); }
+  .dust .item b { font-size:24px; }
+  .badge { display:inline-block; font-size:12px; font-weight:600; color:#fff; padding:2px 8px; border-radius:99px; background:var(--na); margin-left:4px; }
+  .status { font-size:12px; color:#64748b; margin-top:14px; min-height:1em; }
+  .error { color:#dc2626; }
+  .tools { position:absolute; top:10px; right:10px; z-index:500; background:#fff; border-radius:12px;
+    padding:8px; box-shadow:0 2px 10px rgba(0,0,0,.2); display:flex; gap:6px; align-items:center; font-size:13px; }
+  .tools select { padding:6px 8px; }
+  .legend { position:absolute; left:10px; bottom:22px; z-index:500; background:#fff; border-radius:12px;
+    padding:8px 12px; box-shadow:0 2px 10px rgba(0,0,0,.2); font-size:12px; }
+  .legend i { display:inline-block; width:12px; height:12px; border-radius:50%; margin:0 4px 0 8px; vertical-align:-1px; }
+  .legend i:first-child { margin-left:0; }
+  .pin { display:flex; flex-direction:column; align-items:center; transform:translate(-50%,-50%); width:max-content; }
+  .pin b { min-width:34px; text-align:center; color:#fff; font-size:13px; padding:3px 6px; border-radius:99px;
+    border:2px solid #fff; box-shadow:0 1px 5px rgba(0,0,0,.4); }
+  .pin span { font-size:11px; color:#0f172a; text-shadow:0 0 3px #fff,0 0 3px #fff,0 0 3px #fff; margin-top:1px; }
+</style>
+</head>
+<body>
+<div class="layout">
+  <div class="card mapwrap">
+    <div id="map"></div>
+    <div class="tools">표시:
+      <select id="metric">
+        <option value="pm10">미세먼지 PM10</option>
+        <option value="pm25">초미세먼지 PM2.5</option>
+        <option value="temp">기온</option>
+      </select>
+    <label><input type="checkbox" id="showStations" checked style="padding:0"> 측정소</label>
+    </div>
+    <div class="legend" id="legend"></div>
+  </div>
+
+  <div class="card panel">
+    <div class="search">
+      <input id="q" type="text" placeholder="지역 검색 (예: 서, 수원, s, Busan) 또는 지도 클릭" autocomplete="off">
+      <ul class="list" id="list" hidden></ul>
+    </div>
+    <div class="place" id="place">서울특별시</div>
+    <div class="sub" id="sub"></div>
+    <div class="weather">
+      <div class="icon" id="icon">⏳</div>
+      <div>
+        <div class="temp" id="temp">--°C</div>
+        <div class="desc" id="desc">불러오는 중...</div>
+      </div>
+    </div>
+    <div class="grid">
+      <div class="item"><span>체감온도</span><b id="feels">--</b></div>
+      <div class="item"><span>습도</span><b id="humidity">--</b></div>
+      <div class="item"><span>풍속</span><b id="wind">--</b></div>
+      <div class="item"><span>강수량</span><b id="precip">--</b></div>
+    </div>
+    <h3>😷 대기질</h3>
+    <div class="dust">
+      <div class="item" id="boxPm10"><span>미세먼지 PM10 (㎍/㎥)</span><b id="pm10">--</b><em class="badge" id="gPm10">-</em></div>
+      <div class="item" id="boxPm25"><span>초미세먼지 PM2.5 (㎍/㎥)</span><b id="pm25">--</b><em class="badge" id="gPm25">-</em></div>
+    </div>
+    <div class="item" id="stationBox" style="margin-top:10px" hidden></div>
+    <div class="status" id="status"></div>
+    <div class="status">날씨·대기질: Open-Meteo (대기질은 예측 모델값). 📡 표시는 에어코리아 실측값입니다.</div>
+    <div class="status" id="backendStatus"></div>
+  </div>
+</div>
+
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* ---------- 한글 → 로마자 (영어 검색용) ---------- */
+const CHO = ["g","kk","n","d","tt","r","m","b","pp","s","ss","","j","jj","ch","k","t","p","h"];
+const JUNG = ["a","ae","ya","yae","eo","e","yeo","ye","o","wa","wae","oe","yo","u","wo","we","wi","yu","eu","ui","i"];
+const JONG = ["","k","kk","ks","n","nj","nh","t","l","lk","lm","lb","ls","lt","lp","lh","m","p","ps","t","t","ng","t","t","k","t","p","t"];
+function romanize(s) {
+  let out = "";
+  for (const ch of s) {
+    const c = ch.charCodeAt(0) - 0xAC00;
+    if (c < 0 || c > 11171) { out += ch; continue; }
+    out += CHO[Math.floor(c / 588)] + JUNG[Math.floor((c % 588) / 28)] + JONG[c % 28];
+  }
+  return out;
+}
+const hasHangul = s => /[가-힣ㄱ-ㅎ]/.test(s);
+
+/* ---------- 주요 지역 (지도 마커 + 1글자 검색) ---------- */
+const MAJOR = [
+  ["서울특별시",37.5665,126.9780],["부산광역시",35.1796,129.0756],["대구광역시",35.8714,128.6014],
+  ["인천광역시",37.4563,126.7052],["광주광역시",35.1595,126.8526],["대전광역시",36.3504,127.3845],
+  ["울산광역시",35.5384,129.3114],["세종특별자치시",36.4800,127.2890],["수원시",37.2636,127.0286],
+  ["성남시",37.4200,127.1265],["고양시",37.6584,126.8320],["용인시",37.2411,127.1776],
+  ["창원시",35.2280,128.6811],["청주시",36.6424,127.4890],["천안시",36.8151,127.1139],
+  ["전주시",35.8242,127.1480],["포항시",36.0190,129.3435],["제주시",33.4996,126.5312],
+  ["서귀포시",33.2541,126.5601],["춘천시",37.8813,127.7298],["강릉시",37.7519,128.8761],
+  ["원주시",37.3422,127.9202],["목포시",34.8118,126.3922],["여수시",34.7604,127.6622],
+  ["순천시",34.9506,127.4872],["경주시",35.8562,129.2247],["안동시",36.5684,128.7294],
+  ["속초시",38.2070,128.5918],["울릉군",37.4844,130.9057],["독도",37.2426,131.8597]
+].map(([name,lat,lon]) => {
+  const en = romanize(name.replace(/(특별시|광역시|특별자치시|시|군)$/, ""));
+  return { name, en, short: name.replace(/(특별시|광역시|특별자치시|시|군)$/, ""),
+           sub: "대한민국 · " + en.charAt(0).toUpperCase() + en.slice(1), lat, lon, local: true };
+});
+
+/* ---------- 등급 (한국 환경부 기준) ---------- */
+const GRADES = [
+  { label: "좋음", color: "#2563eb" }, { label: "보통", color: "#16a34a" },
+  { label: "나쁨", color: "#f97316" }, { label: "매우나쁨", color: "#dc2626" }
+];
+const NA = "#94a3b8";
+const gradeOf = (v, cuts) => v == null ? -1 : cuts.findIndex(c => v <= c) === -1 ? 3 : cuts.findIndex(c => v <= c);
+const PM10_CUTS = [30, 80, 150], PM25_CUTS = [15, 35, 75];
+const TEMP_SCALE = [[-5,"#1d4ed8"],[5,"#38bdf8"],[15,"#22c55e"],[25,"#f59e0b"],[999,"#dc2626"]];
+const tempColor = t => t == null ? NA : TEMP_SCALE.find(([m]) => t <= m)[1];
+
+/* ---------- 지오코딩 검색 + 자동완성 ---------- */
+const GEO = "https://geocoding-api.open-meteo.com/v1/search";
+async function geoSearch(name) {
+  if (name.trim().length < 2) return [];
+  const res = await fetch(`${GEO}?name=${encodeURIComponent(name)}&count=10&language=ko&countryCode=KR&format=json`);
+  return res.ok ? (await res.json()).results || [] : [];
+}
+async function searchPlaces(text) {
+  const q = text.trim(); if (!q) return [];
+  const ql = q.toLowerCase(), found = [], seen = new Set();
+  const add = p => {
+    const la = p.local ? p.lat : p.latitude, lo = p.local ? p.lon : p.longitude;
+    const key = `${la.toFixed(2)},${lo.toFixed(2)}`;
+    if (seen.has(key)) return; seen.add(key);
+    found.push(p.local ? p : { name: p.name, sub: [p.admin2, p.admin1].filter(Boolean).join(", ") || "대한민국", lat: la, lon: lo });
+  };
+  MAJOR.filter(m => m.name.startsWith(q) || m.en.startsWith(ql)).forEach(add);
+  let results = await geoSearch(q);
+  if (results.length < 3 && hasHangul(q)) {
+    const stripped = q.replace(/(특별시|광역시|특별자치시|특별자치도|시|군|구|도)$/, "") || q;
+    results = results.concat(await geoSearch(romanize(stripped)));
+  }
+  results.forEach(add);
+  return found.slice(0, 10);
+}
+
+const $ = id => document.getElementById(id);
+const input = $("q"), list = $("list");
+let items = [], active = -1, timer, reqId = 0;
+
+function renderList(msg) {
+  list.innerHTML = "";
+  if (msg) { list.innerHTML = `<li class="empty">${msg}</li>`; list.hidden = false; return; }
+  if (!items.length) { list.hidden = true; return; }
+  items.forEach((p, i) => {
+    const li = document.createElement("li");
+    li.innerHTML = `${p.name}<small>${p.sub}</small>`;
+    li.className = i === active ? "active" : "";
+    li.addEventListener("mousedown", e => { e.preventDefault(); choose(i); });
+    list.appendChild(li);
+  });
+  list.hidden = false;
+}
+input.addEventListener("input", () => {
+  clearTimeout(timer);
+  const text = input.value;
+  if (!text.trim()) { items = []; renderList(); return; }
+  timer = setTimeout(async () => {
+    const id = ++reqId;
+    try {
+      const r = await searchPlaces(text);
+      if (id !== reqId) return;
+      items = r; active = -1; renderList(r.length ? null : "검색 결과가 없습니다");
+    } catch { if (id === reqId) renderList("검색 중 오류가 발생했습니다"); }
+  }, 250);
+});
+input.addEventListener("keydown", e => {
+  if (list.hidden || !items.length) return;
+  if (e.key === "ArrowDown") { active = (active + 1) % items.length; renderList(); e.preventDefault(); }
+  else if (e.key === "ArrowUp") { active = (active - 1 + items.length) % items.length; renderList(); e.preventDefault(); }
+  else if (e.key === "Enter") { choose(active >= 0 ? active : 0); e.preventDefault(); }
+  else if (e.key === "Escape") list.hidden = true;
+});
+input.addEventListener("blur", () => { list.hidden = true; });
+input.addEventListener("focus", () => { if (items.length) renderList(); });
+function choose(i) { input.value = items[i].name; list.hidden = true; select(items[i], true); }
+
+/* ---------- 지도 ---------- */
+const map = L.map("map", { zoomControl: true }).setView([36.3, 127.8], 7);
+// OSM 공식 타일은 file:// 로 열면 403(차단)이라 http(s) 로 열 때만 사용.
+// file:// 로 직접 열었을 땐 키가 필요 없는 Esri 타일로 대체.
+const viaHttp = location.protocol.startsWith("http");
+(viaHttp
+  ? L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 19, attribution: "© OpenStreetMap contributors" })
+  : L.tileLayer("https://server.arcgisonline.com/ArcGIS/rest/services/World_Street_Map/MapServer/tile/{z}/{y}/{x}",
+      { maxZoom: 18, attribution: "Tiles © Esri" })
+).addTo(map);
+
+let selMarker = null, markers = [], overview = [];
+map.on("click", e => {
+  const lat = +e.latlng.lat.toFixed(4), lon = +e.latlng.lng.toFixed(4);
+  select({ name: "선택한 위치", sub: `위도 ${lat}, 경도 ${lon}`, lat, lon }, false);
+});
+
+function select(p, pan) {
+  current = p;
+  if (selMarker) selMarker.remove();
+  selMarker = L.circleMarker([p.lat, p.lon], { radius: 14, color: "#0f172a", weight: 3, fillOpacity: 0 }).addTo(map);
+  if (pan) map.flyTo([p.lat, p.lon], Math.max(map.getZoom(), 9), { duration: .8 });
+  loadDetail();
+}
+
+/* ---------- 전국 개요 마커 (지점 30곳을 한 번에 조회) ---------- */
+function metricValue(d, m) { return m === "pm10" ? d.pm10 : m === "pm25" ? d.pm25 : d.temp; }
+function metricColor(v, m) {
+  if (v == null) return NA;
+  if (m === "temp") return tempColor(v);
+  const g = gradeOf(v, m === "pm10" ? PM10_CUTS : PM25_CUTS);
+  return GRADES[g].color;
+}
+function renderLegend() {
+  const m = $("metric").value;
+  $("legend").innerHTML = m === "temp"
+    ? `<i style="background:#1d4ed8"></i>~-5 <i style="background:#38bdf8"></i>~5 <i style="background:#22c55e"></i>~15 <i style="background:#f59e0b"></i>~25 <i style="background:#dc2626"></i>25+ °C`
+    : GRADES.map(g => `<i style="background:${g.color}"></i>${g.label}`).join("");
+}
+function renderMarkers() {
+  markers.forEach(x => x.remove()); markers = [];
+  const m = $("metric").value;
+  overview.forEach(d => {
+    const v = metricValue(d, m);
+    const txt = v == null ? "-" : Math.round(v);
+    const icon = L.divIcon({
+      className: "", iconSize: [0, 0],
+      html: `<div class="pin"><b style="background:${metricColor(v, m)}">${txt}</b><span>${d.short}</span></div>`
+    });
+    const mk = L.marker([d.lat, d.lon], { icon }).addTo(map);
+    mk.on("click", ev => { L.DomEvent.stopPropagation(ev); input.value = d.name; select(d, false); });
+    markers.push(mk);
+  });
+  renderLegend();
+}
+async function loadOverview() {
+  const la = MAJOR.map(p => p.lat).join(","), lo = MAJOR.map(p => p.lon).join(",");
+  const wUrl = `https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&current=temperature_2m&timezone=auto`;
+  const aUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${la}&longitude=${lo}&current=pm10,pm2_5&timezone=auto`;
+  try {
+    const [w, a] = await Promise.all([fetch(wUrl).then(r => r.json()), fetch(aUrl).then(r => r.json())]);
+    overview = MAJOR.map((p, i) => ({ ...p, temp: w[i]?.current?.temperature_2m ?? null,
+      pm10: a[i]?.current?.pm10 ?? null, pm25: a[i]?.current?.pm2_5 ?? null }));
+  } catch { overview = MAJOR.map(p => ({ ...p, temp: null, pm10: null, pm25: null })); }
+  renderMarkers();
+}
+$("metric").addEventListener("change", () => { renderMarkers(); renderStations(); });
+$("showStations").addEventListener("change", renderStations);
+
+/* ---------- 에어코리아 실측 측정소 (백엔드 경유, 키는 서버에만 있음) ---------- */
+// 로컬 실행: http://localhost:8000 / 배포 후: index.html?api=https://내-백엔드주소
+const BACKEND = (new URLSearchParams(location.search).get("api") || "http://localhost:8000").replace(/\/$/, "");
+let stations = [], stationLayer = L.layerGroup().addTo(map);
+
+async function loadStations() {
+  try {
+    const r = await fetch(`${BACKEND}/air/stations`);
+    const d = await r.json();
+    // 키 없이 연습 모드로 도는 서버의 가짜 값은 실측처럼 보이지 않게 숨긴다
+    stations = d.mode === "demo" ? [] : (d.stations || []);
+    $("backendStatus").textContent = d.error ? "📡 측정소 서버 오류: " + d.error
+      : d.mode === "demo" ? "📡 인증키가 없어 실측 측정소는 숨기고 Open-Meteo 예측값만 표시합니다."
+      : `📡 에어코리아 실측 측정소 ${d.count}곳 연결됨`;
+  } catch {
+    stations = [];
+    $("backendStatus").textContent = "📡 측정소 서버에 연결되지 않아 Open-Meteo 예측값만 표시합니다.";
+  }
+  renderStations();
+  showNearest();
+}
+
+function renderStations() {
+  stationLayer.clearLayers();
+  const m = $("metric").value;
+  if (!$("showStations").checked || m === "temp") return;
+  stations.forEach(s => {
+    const v = m === "pm10" ? s.pm10 : s.pm25;
+    L.circleMarker([s.lat, s.lon], { radius: 6, color: "#fff", weight: 1.5, fillColor: metricColor(v, m), fillOpacity: .95 })
+      .bindTooltip(`📡 ${s.station} · ${v ?? "-"}`)
+      .on("click", ev => { L.DomEvent.stopPropagation(ev); input.value = s.station;
+        select({ name: s.station, sub: `📡 측정소 · ${s.addr || s.sido}`, lat: s.lat, lon: s.lon }, false); })
+      .addTo(stationLayer);
+  });
+}
+
+function km(aLa, aLo, bLa, bLo) {
+  const p = Math.PI / 180;
+  const h = Math.sin((bLa - aLa) * p / 2) ** 2 + Math.cos(aLa * p) * Math.cos(bLa * p) * Math.sin((bLo - aLo) * p / 2) ** 2;
+  return 12742 * Math.asin(Math.sqrt(h));
+}
+function showNearest() {
+  const box = $("stationBox");
+  if (!stations.length) { box.hidden = true; return; }
+  const best = stations.map(s => ({ s, d: km(current.lat, current.lon, s.lat, s.lon) })).sort((a, b) => a.d - b.d)[0];
+  const { s, d } = best;
+  const badge = (g, cuts, v) => { const i = gradeOf(v, cuts); return i < 0 ? "" : `<em class="badge" style="background:${GRADES[i].color}">${GRADES[i].label}</em>`; };
+  box.innerHTML = `<span>📡 가장 가까운 측정소 실측값 · ${s.station} (${d.toFixed(1)}km${d > 30 ? ", 멀어서 참고용" : ""})</span>
+    <b>PM10 ${s.pm10 ?? "-"}</b>${badge(0, PM10_CUTS, s.pm10)}
+    <b style="margin-left:8px">PM2.5 ${s.pm25 ?? "-"}</b>${badge(0, PM25_CUTS, s.pm25)}
+    <span>${s.time || ""} 기준</span>`;
+  box.hidden = false;
+}
+
+/* ---------- 선택 지점 상세 (날씨 + 대기질) ---------- */
+const WMO = {
+  0:["☀️","맑음"],1:["🌤️","대체로 맑음"],2:["⛅","구름 조금"],3:["☁️","흐림"],
+  45:["🌫️","안개"],48:["🌫️","짙은 안개"],51:["🌦️","약한 이슬비"],53:["🌦️","이슬비"],55:["🌦️","강한 이슬비"],
+  56:["🌧️","어는 이슬비"],57:["🌧️","강한 어는 이슬비"],61:["🌧️","약한 비"],63:["🌧️","비"],65:["🌧️","강한 비"],
+  66:["🌧️","어는 비"],67:["🌧️","강한 어는 비"],71:["🌨️","약한 눈"],73:["🌨️","눈"],75:["❄️","강한 눈"],
+  77:["🌨️","싸락눈"],80:["🌦️","약한 소나기"],81:["🌧️","소나기"],82:["⛈️","강한 소나기"],
+  85:["🌨️","약한 눈보라"],86:["❄️","강한 눈보라"],95:["⛈️","뇌우"],96:["⛈️","우박 동반 뇌우"],99:["⛈️","강한 우박 뇌우"]
+};
+let current = MAJOR[0];
+
+function setDust(id, boxId, gId, v, cuts) {
+  const g = gradeOf(v, cuts);
+  const color = g < 0 ? NA : GRADES[g].color;
+  $(id).textContent = v == null ? "--" : Math.round(v);
+  $(gId).textContent = g < 0 ? "-" : GRADES[g].label;
+  $(gId).style.background = color;
+  $(boxId).style.borderLeftColor = color;
+}
+
+async function loadDetail() {
+  const { lat, lon, name, sub } = current;
+  $("place").textContent = name;
+  $("sub").textContent = sub || "";
+  showNearest();
+  $("status").className = "status"; $("status").textContent = "불러오는 중...";
+  const wUrl = `https://api.open-meteo.com/v1/forecast?latitude=${lat}&longitude=${lon}`
+    + "&current=temperature_2m,apparent_temperature,relative_humidity_2m,precipitation,weather_code,wind_speed_10m&timezone=auto";
+  const aUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${lat}&longitude=${lon}&current=pm10,pm2_5&timezone=auto`;
+  try {
+    const [wr, ar] = await Promise.all([fetch(wUrl), fetch(aUrl)]);
+    if (!wr.ok) throw new Error("날씨 HTTP " + wr.status);
+    const { current: c, current_units: u } = await wr.json();
+    const [icon, desc] = WMO[c.weather_code] || ["❓","알 수 없음"];
+    $("icon").textContent = icon; $("desc").textContent = desc;
+    $("temp").textContent = `${Math.round(c.temperature_2m)}${u.temperature_2m}`;
+    $("feels").textContent = `${c.apparent_temperature}${u.apparent_temperature}`;
+    $("humidity").textContent = `${c.relative_humidity_2m}${u.relative_humidity_2m}`;
+    $("wind").textContent = `${c.wind_speed_10m} ${u.wind_speed_10m}`;
+    $("precip").textContent = `${c.precipitation} ${u.precipitation}`;
+    let a = {};
+    if (ar.ok) a = (await ar.json()).current || {};
+    setDust("pm10", "boxPm10", "gPm10", a.pm10 ?? null, PM10_CUTS);
+    setDust("pm25", "boxPm25", "gPm25", a.pm2_5 ?? null, PM25_CUTS);
+    $("status").textContent = "기준 시각: " + c.time.replace("T", " ");
+  } catch (e) {
+    $("icon").textContent = "⚠️"; $("desc").textContent = "정보를 가져오지 못했습니다";
+    $("status").className = "status error"; $("status").textContent = e.message;
+  }
+}
+
+select(MAJOR[0], false);
+loadOverview();
+loadStations();
+setInterval(() => { loadDetail(); loadOverview(); loadStations(); }, 10 * 60 * 1000);
+</script>
+</body>
+</html>
