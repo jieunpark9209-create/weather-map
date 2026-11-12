@@ -14,7 +14,18 @@
   .card { background:#fff; border-radius:20px; box-shadow:0 4px 20px rgba(15,23,42,.08); }
   .mapwrap { position:relative; overflow:hidden; min-height:460px; height:calc(100vh - 32px); }
   @media (max-width: 860px) { .mapwrap { height:62vh; } }
-  #map { position:absolute; inset:0; }
+  #map { position:absolute; inset:0; z-index:1; }
+  #three { position:absolute; inset:0; z-index:1; background:linear-gradient(#eaf3fb,#cfe3f5); }
+  #three canvas { display:block; width:100%; height:100%; touch-action:none; }
+  .hidden-view { visibility:hidden; pointer-events:none; }
+  .tools button { padding:5px 10px; border-radius:8px; border:1px solid #cbd5e1; background:#fff; color:#334155; cursor:pointer; }
+  .tools button.on { background:#2563eb; color:#fff; border-color:#2563eb; }
+  #tip { position:absolute; z-index:600; pointer-events:none; background:#0f172a; color:#fff; font-size:12px;
+    padding:4px 8px; border-radius:8px; display:none; white-space:nowrap; }
+  .tools { flex-wrap:wrap; max-width:calc(100% - 20px); }
+  .tools label { white-space:nowrap; }
+  .hint3d { position:absolute; right:10px; bottom:22px; z-index:500; max-width:50%; background:rgba(255,255,255,.9); border-radius:10px;
+    padding:6px 10px; font-size:12px; color:#475569; box-shadow:0 2px 10px rgba(0,0,0,.15); }
   .panel { padding:20px; align-self:start; }
   input, select, button { font:inherit; padding:10px 14px; border-radius:12px; border:1px solid #cbd5e1; }
   .search { position:relative; margin-bottom:16px; }
@@ -60,8 +71,11 @@
 <body>
 <div class="layout">
   <div class="card mapwrap">
-    <div id="map"></div>
-    <div class="tools">표시:
+    <div id="map" class="hidden-view"></div>
+    <div id="three"></div>
+    <div id="tip"></div>
+    <div class="hint3d" id="hint3d">🖱 드래그: 회전 · 휠: 확대 · 우클릭 드래그: 이동 · 막대 높이 = 수치</div>
+    <div class="tools"><button id="v3" class="on">3D</button><button id="v2">2D</button> 표시:
       <select id="metric">
         <option value="pm10">미세먼지 PM10</option>
         <option value="pm25">초미세먼지 PM2.5</option>
@@ -104,6 +118,11 @@
   </div>
 </div>
 
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/" } }
+</script>
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script>
 /* ---------- 한글 → 로마자 (영어 검색용) ---------- */
@@ -239,6 +258,7 @@ function select(p, pan) {
   if (selMarker) selMarker.remove();
   selMarker = L.circleMarker([p.lat, p.lon], { radius: 14, color: "#0f172a", weight: 3, fillOpacity: 0 }).addTo(map);
   if (pan) map.flyTo([p.lat, p.lon], Math.max(map.getZoom(), 9), { duration: .8 });
+  window.view3d?.setSelected(p, pan);
   loadDetail();
 }
 
@@ -271,16 +291,31 @@ function renderMarkers() {
     markers.push(mk);
   });
   renderLegend();
+  window.view3d?.refresh();
 }
 async function loadOverview() {
   const la = MAJOR.map(p => p.lat).join(","), lo = MAJOR.map(p => p.lon).join(",");
   const wUrl = `https://api.open-meteo.com/v1/forecast?latitude=${la}&longitude=${lo}&current=temperature_2m&timezone=auto`;
   const aUrl = `https://air-quality-api.open-meteo.com/v1/air-quality?latitude=${la}&longitude=${lo}&current=pm10,pm2_5&timezone=auto`;
+  // 호출 한도(429) 방지: 10분 안에 받은 값은 브라우저에 저장해 재사용
+  const KEY = "overview-v1";
   try {
-    const [w, a] = await Promise.all([fetch(wUrl).then(r => r.json()), fetch(aUrl).then(r => r.json())]);
-    overview = MAJOR.map((p, i) => ({ ...p, temp: w[i]?.current?.temperature_2m ?? null,
-      pm10: a[i]?.current?.pm10 ?? null, pm25: a[i]?.current?.pm2_5 ?? null }));
-  } catch { overview = MAJOR.map(p => ({ ...p, temp: null, pm10: null, pm25: null })); }
+    const c = JSON.parse(localStorage.getItem(KEY) || "null");
+    if (c && Date.now() - c.t < 10 * 60 * 1000) { overview = MAJOR.map((p, i) => ({ ...p, ...c.v[i] })); renderMarkers(); return; }
+  } catch {}
+  try {
+    // 날씨·대기질 중 하나가 한도(429)에 걸려도 다른 하나는 표시
+    const [w, a] = await Promise.all([fetch(wUrl).then(r => r.json()).catch(() => null),
+                                     fetch(aUrl).then(r => r.json()).catch(() => null)]);
+    const wOk = Array.isArray(w), aOk = Array.isArray(a);
+    if (!wOk && !aOk) throw new Error("rate limit");
+    const v = MAJOR.map((p, i) => ({ temp: wOk ? w[i]?.current?.temperature_2m ?? null : null,
+      pm10: aOk ? a[i]?.current?.pm10 ?? null : null, pm25: aOk ? a[i]?.current?.pm2_5 ?? null : null }));
+    overview = MAJOR.map((p, i) => ({ ...p, ...v[i] }));
+    if (wOk && aOk) try { localStorage.setItem(KEY, JSON.stringify({ t: Date.now(), v })); } catch {}
+  } catch {
+    if (!overview.length) overview = MAJOR.map(p => ({ ...p, temp: null, pm10: null, pm25: null }));
+  }
   renderMarkers();
 }
 $("metric").addEventListener("change", () => { renderMarkers(); renderStations(); });
@@ -309,6 +344,7 @@ async function loadStations() {
 }
 
 function renderStations() {
+  window.view3d?.refresh();
   stationLayer.clearLayers();
   const m = $("metric").value;
   if (!$("showStations").checked || m === "temp") return;
@@ -391,10 +427,237 @@ async function loadDetail() {
   }
 }
 
+/* ---------- 2D / 3D 전환 + 3D 모듈과의 연결 ---------- */
+let view = "3d";
+function setView(v) {
+  view = v;
+  $("three").classList.toggle("hidden-view", v !== "3d");
+  $("map").classList.toggle("hidden-view", v !== "2d");
+  $("hint3d").hidden = v !== "3d";
+  $("v3").classList.toggle("on", v === "3d");
+  $("v2").classList.toggle("on", v === "2d");
+  if (window.view3d) window.view3d.active = v === "3d";
+  if (v === "2d") setTimeout(() => map.invalidateSize(), 50);
+}
+$("v3").addEventListener("click", () => setView("3d"));
+$("v2").addEventListener("click", () => setView("2d"));
+setTimeout(() => { if (!window.view3d) setView("2d"); }, 6000); // 3D 라이브러리를 못 받으면 2D 로 대체
+
+window.APP = {
+  state: () => ({ overview, stations, current, metric: $("metric").value, showStations: $("showStations").checked }),
+  metricValue, metricColor,
+  select,
+  pickCity(d) { input.value = d.name; select(d, false); },
+  pickStation(s) { input.value = s.station;
+    select({ name: s.station, sub: `📡 측정소 · ${s.addr || s.sido}`, lat: s.lat, lon: s.lon }, false); }
+};
+
 select(MAJOR[0], false);
 loadOverview();
 loadStations();
 setInterval(() => { loadDetail(); loadOverview(); loadStations(); }, 10 * 60 * 1000);
+</script>
+
+<script type="module">
+import * as THREE from "three";
+import { OrbitControls } from "three/addons/controls/OrbitControls.js";
+
+/* ---- 좌표 변환: 위도·경도 → 3D 평면 (x: 동쪽, z: 남쪽) ---- */
+const S = 9, K = Math.cos(36 * Math.PI / 180), LON0 = 127.8, LAT0 = 36, SURF = 0.3;
+const toXZ = (lon, lat) => [(lon - LON0) * K * S, -(lat - LAT0) * S];
+const toLL = (x, z) => [x / (K * S) + LON0, -z / S + LAT0];
+
+const el = document.getElementById("three"), tip = document.getElementById("tip");
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 500);
+camera.position.set(0, 58, 52);
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+el.appendChild(renderer.domElement);
+const controls = new OrbitControls(camera, renderer.domElement);
+controls.enableDamping = true;
+controls.maxPolarAngle = Math.PI * 0.48;
+controls.minDistance = 8; controls.maxDistance = 130;
+scene.add(new THREE.HemisphereLight(0xffffff, 0x8fa3b8, 1.15));
+const sun = new THREE.DirectionalLight(0xffffff, 1.3); sun.position.set(-30, 60, 30); scene.add(sun);
+
+/* ---- 바다 + 지도(시도별 입체 압출) ---- */
+const sea = new THREE.Mesh(new THREE.PlaneGeometry(400, 400),
+  new THREE.MeshStandardMaterial({ color: 0xb9d6ee, roughness: 1 }));
+sea.rotation.x = -Math.PI / 2; scene.add(sea);
+const land = new THREE.Group(); scene.add(land);
+const provMats = new Map();
+fetch("https://cdn.jsdelivr.net/gh/southkorea/southkorea-maps@master/kostat/2013/json/skorea_provinces_geo_simple.json")
+  .then(r => r.json()).then(gj => {
+    for (const f of gj.features) {
+      const mat = new THREE.MeshStandardMaterial({ color: 0xeef2f7, roughness: .9 });
+      provMats.set(f.properties.name, mat);
+      const polys = f.geometry.type === "Polygon" ? [f.geometry.coordinates] : f.geometry.coordinates;
+      for (const poly of polys) {
+        const ring = r => r.map(([lo, la]) => { const [x, z] = toXZ(lo, la); return new THREE.Vector2(x, -z); });
+        const shape = new THREE.Shape(ring(poly[0]));
+        poly.slice(1).forEach(h => shape.holes.push(new THREE.Path(ring(h))));
+        const geo = new THREE.ExtrudeGeometry(shape, { depth: SURF, bevelEnabled: false });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.rotation.x = -Math.PI / 2; mesh.userData.province = f.properties.name;
+        const edge = new THREE.LineSegments(new THREE.EdgesGeometry(geo, 30),
+          new THREE.LineBasicMaterial({ color: 0x7d93ab }));
+        edge.rotation.x = -Math.PI / 2;
+        land.add(mesh, edge);
+      }
+    }
+  }).catch(() => {});
+
+/* ---- 도시 막대(높이 = 수치) + 이름표 ---- */
+const barGroup = new THREE.Group(), stGroup = new THREE.Group();
+scene.add(barGroup, stGroup);
+const bars = new Map();
+const barGeo = new THREE.CylinderGeometry(.3, .3, 1, 20);
+const heightOf = (m, v) => v == null ? .3
+  : m === "pm10" ? Math.max(.3, v / 16) : m === "pm25" ? Math.max(.3, v / 8) : Math.max(.3, (v + 10) / 4.5);
+
+function label(color, value, name) {
+  const c = document.createElement("canvas"); c.width = 256; c.height = 128;
+  const g = c.getContext("2d");
+  g.fillStyle = color; g.beginPath(); g.roundRect(68, 6, 120, 56, 18); g.fill();
+  g.strokeStyle = "#fff"; g.lineWidth = 5; g.stroke();
+  g.fillStyle = "#fff"; g.font = "bold 40px sans-serif"; g.textAlign = "center"; g.textBaseline = "middle";
+  g.fillText(value, 128, 36);
+  g.font = "bold 30px sans-serif"; g.lineWidth = 6; g.strokeStyle = "#fff"; g.fillStyle = "#0f172a";
+  g.strokeText(name, 128, 96); g.fillText(name, 128, 96);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+
+function refresh() {
+  const st = APP.state(), m = st.metric;
+  const seen = new Set();
+  st.overview.forEach(d => {
+    seen.add(d.name);
+    const v = APP.metricValue(d, m), color = APP.metricColor(v, m);
+    let b = bars.get(d.name);
+    if (!b) {
+      const mesh = new THREE.Mesh(barGeo, new THREE.MeshStandardMaterial({ roughness: .5 }));
+      const [x, z] = toXZ(d.lon, d.lat);
+      mesh.position.set(x, SURF, z); mesh.scale.y = 0.01;
+      const sprite = new THREE.Sprite(new THREE.SpriteMaterial({ depthTest: false, transparent: true }));
+      sprite.scale.set(5, 2.5, 1); sprite.renderOrder = 10;
+      mesh.userData.city = sprite.userData.city = d;
+      barGroup.add(mesh, sprite);
+      b = { mesh, sprite, cur: 0.01, target: 1, x, z }; bars.set(d.name, b);
+    }
+    b.target = heightOf(m, v);
+    b.mesh.material.color.set(color);
+    const old = b.sprite.material.map; b.sprite.material.map = label(color, v == null ? "-" : Math.round(v), d.short);
+    b.sprite.material.needsUpdate = true; old?.dispose();
+  });
+  // 실측 측정소 (키가 있을 때만 들어옴)
+  stGroup.clear();
+  if (st.showStations && m !== "temp") st.stations.forEach(s => {
+    const v = m === "pm10" ? s.pm10 : s.pm25;
+    const dot = new THREE.Mesh(new THREE.SphereGeometry(.2, 12, 12), new THREE.MeshStandardMaterial({ color: APP.metricColor(v, m) }));
+    const [x, z] = toXZ(s.lon, s.lat); dot.position.set(x, SURF + .2, z);
+    dot.userData.station = s; stGroup.add(dot);
+  });
+}
+
+/* ---- 선택 표시(링 + 빔) ---- */
+const marker = new THREE.Group(); marker.visible = false; scene.add(marker);
+const ring = new THREE.Mesh(new THREE.TorusGeometry(1, .09, 10, 40), new THREE.MeshBasicMaterial({ color: 0x0f172a }));
+ring.rotation.x = Math.PI / 2; ring.position.y = SURF + .1;
+const beam = new THREE.Mesh(new THREE.CylinderGeometry(.05, .05, 9, 8),
+  new THREE.MeshBasicMaterial({ color: 0x0f172a, transparent: true, opacity: .45 }));
+beam.position.y = SURF + 4.5;
+marker.add(ring, beam);
+let goal = null;
+function setSelected(p, pan) {
+  const [x, z] = toXZ(p.lon, p.lat);
+  marker.position.set(x, 0, z); marker.visible = true;
+  if (pan) goal = new THREE.Vector3(x, 0, z);
+}
+
+/* ---- 마우스: 클릭 선택 / 호버 툴팁 ---- */
+const ray = new THREE.Raycaster(), mouse = new THREE.Vector2();
+function pick(ev) {
+  const r = renderer.domElement.getBoundingClientRect();
+  mouse.set(((ev.clientX - r.left) / r.width) * 2 - 1, -((ev.clientY - r.top) / r.height) * 2 + 1);
+  ray.setFromCamera(mouse, camera);
+  const objs = [...barGroup.children, ...stGroup.children];
+  let hit = ray.intersectObjects(objs, false)[0];
+  if (hit) return hit;
+  return ray.intersectObjects([...land.children.filter(o => o.isMesh), sea], false)[0] || null;
+}
+let down = null, hoverProv = null;
+renderer.domElement.addEventListener("pointerdown", e => { down = [e.clientX, e.clientY]; });
+renderer.domElement.addEventListener("pointerup", e => {
+  if (!down || Math.hypot(e.clientX - down[0], e.clientY - down[1]) > 5) return;
+  const hit = pick(e); if (!hit) return;
+  const u = hit.object.userData;
+  if (u.city) APP.pickCity(u.city);
+  else if (u.station) APP.pickStation(u.station);
+  else {
+    const [lo, la] = toLL(hit.point.x, hit.point.z);
+    const lat = +la.toFixed(4), lon = +lo.toFixed(4);
+    APP.select({ name: "선택한 위치", sub: `위도 ${lat}, 경도 ${lon}`, lat, lon }, false);
+  }
+});
+let pending = false;
+renderer.domElement.addEventListener("pointermove", e => {
+  if (pending || e.buttons) { tip.style.display = "none"; return; }
+  pending = true;
+  requestAnimationFrame(() => {
+    pending = false;
+    const hit = pick(e), u = hit?.object.userData || {};
+    const prov = u.province || null;
+    if (prov !== hoverProv) {
+      if (hoverProv) provMats.get(hoverProv)?.emissive.setHex(0);
+      if (prov) provMats.get(prov)?.emissive.setHex(0x1d4ed8).multiplyScalar(.25);
+      hoverProv = prov;
+    }
+    const st = APP.state();
+    let text = null;
+    if (u.city) { const v = APP.metricValue(u.city, st.metric); text = `${u.city.name} · ${v == null ? "-" : Math.round(v)}`; }
+    else if (u.station) text = `📡 ${u.station.station} · PM10 ${u.station.pm10 ?? "-"}`;
+    else if (prov) text = prov;
+    renderer.domElement.style.cursor = (u.city || u.station) ? "pointer" : "grab";
+    if (!text) { tip.style.display = "none"; return; }
+    const r = el.getBoundingClientRect();
+    tip.textContent = text; tip.style.display = "block";
+    tip.style.left = (e.clientX - r.left + 12) + "px"; tip.style.top = (e.clientY - r.top + 12) + "px";
+  });
+});
+renderer.domElement.addEventListener("pointerleave", () => { tip.style.display = "none"; });
+
+/* ---- 크기 / 렌더 루프 ---- */
+new ResizeObserver(() => {
+  const w = el.clientWidth, h = el.clientHeight; if (!w || !h) return;
+  renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix();
+}).observe(el);
+
+const api = { active: true, refresh, setSelected };
+window.view3d = api;
+const clock = new THREE.Clock();
+(function loop() {
+  requestAnimationFrame(loop);
+  if (!api.active) return;
+  const t = clock.getElapsedTime();
+  bars.forEach(b => {
+    b.cur += (b.target - b.cur) * .12;
+    b.mesh.scale.y = b.cur; b.mesh.position.y = SURF + b.cur / 2;
+    b.sprite.position.set(b.x, SURF + b.cur + 1.5, b.z);
+  });
+  ring.scale.setScalar(1 + .15 * Math.sin(t * 4));
+  if (goal) {  // 카메라 시점은 유지한 채 선택 지점으로 부드럽게 이동
+    const step = goal.clone().sub(controls.target).multiplyScalar(.08);
+    controls.target.add(step); camera.position.add(step);
+    if (controls.target.distanceTo(goal) < .05) goal = null;
+  }
+  controls.update();
+  renderer.render(scene, camera);
+})();
+
+refresh();
+setSelected(APP.state().current, false);
 </script>
 </body>
 </html>
